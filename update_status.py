@@ -43,20 +43,23 @@ def parse_status(html, users):
     text = re.sub(r'&amp;',  '&', text)
 
     # ── Pod counting ──────────────────────────────────────────────────────────
-    # Search the ENTIRE page for jupyter-USERNAME pods — no need to limit to
-    # a node block since our users dict only contains usernames we care about.
-    # Use a set to deduplicate — the same pod appears in multiple sections.
-    active_pods = set(m.group(1).lower()
-                      for m in re.finditer(r'jupyter-([\w-]+)', text))
-
-    print("DEBUG active_pods:", active_pods)
+    # Only look at pods on kiaransalee. Use a set to deduplicate — the same
+    # pod appears in multiple sections (gpu, mig-1g, mig-3g, etc).
+    # Unknown pods (not in users.csv) are counted as researchers since only
+    # researchers should have pods on this node outside the managed list.
+    node_idx = text.find(JUPYTER_NODE)
+    kiaransalee_pods = set()
+    if node_idx != -1:
+        node_block = text[node_idx:node_idx + 4000]
+        kiaransalee_pods = set(m.group(1).lower()
+                               for m in re.finditer(r'jupyter-([\w-]+)', node_block))
 
     student_active    = 0
     researcher_active = 0
-    for pod in active_pods:
+    for pod in kiaransalee_pods:
         role = users.get(pod)
-        if   role == 'student':    student_active    += 1
-        elif role == 'researcher': researcher_active += 1
+        if role == 'student': student_active    += 1
+        else:                 researcher_active += 1  # known researcher OR unknown = researcher
 
     # ── MIG free slice counting ───────────────────────────────────────────────
     # The status page lists each MIG type then an indented line per node, e.g.:

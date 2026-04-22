@@ -1,0 +1,35 @@
+name: Update GPU Status
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # every hour, matching the status page update cycle
+  workflow_dispatch:       # allows manual trigger from the Actions tab
+
+jobs:
+  update-status:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # needed to write status.json to this repo
+
+    steps:
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+
+      - name: Fetch users.csv from private repo
+        run: |
+          curl -s \
+            -H "Authorization: Bearer ${{ secrets.USERLIST_TOKEN }}" \
+            -H "Accept: application/vnd.github.raw+json" \
+            "https://api.github.com/repos/SEDS-GPU/gpu-userlist/contents/users.csv" \
+            -o users.csv
+
+      - name: Run status script
+        run: python3 update_status.py
+
+      - name: Commit and push status.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status.json
+          git diff --cached --quiet || git commit -m "chore: update GPU status [skip ci]"
+          git push

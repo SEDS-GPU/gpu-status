@@ -49,6 +49,8 @@ def parse_status(html, users):
     active_pods = set(m.group(1).lower()
                       for m in re.finditer(r'jupyter-([\w-]+)', text))
 
+    print("DEBUG active_pods:", active_pods)
+
     student_active    = 0
     researcher_active = 0
     for pod in active_pods:

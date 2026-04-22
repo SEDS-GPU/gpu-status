@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>JupyterHub GPU Access</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #f5f4f0; --surface: #fff; --border: rgba(0,0,0,0.10);
+  --text: #1a1a18; --text-muted: #6b6a65; --text-hint: #9b9a95;
+  --blue-bg: #e6f1fb; --blue-border: #185fa5; --blue-text: #0c447c;
+  --amber-bg: #faeeda; --amber-border: #854f0b; --amber-text: #633806;
+  --gray-bg: #f1efe8; --gray-border: #5f5e5a; --gray-text: #444441;
+  --radius: 10px; --radius-lg: 16px;
+  --font: system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1a; --surface: #282825; --border: rgba(255,255,255,0.08);
+    --text: #e8e6df; --text-muted: #9b9a95; --text-hint: #6b6a65;
+    --blue-bg: #0c447c; --blue-border: #85b7eb; --blue-text: #b5d4f4;
+    --amber-bg: #633806; --amber-border: #ef9f27; --amber-text: #fac775;
+    --gray-bg: #3a3a37; --gray-border: #b4b2a9; --gray-text: #d3d1c7;
+  }
+}
+body {
+  font-family: var(--font); background: var(--bg); color: var(--text);
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px;
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 32px; width: 100%; max-width: 520px;
+}
+h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
+.subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 28px; }
+.status-bar {
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted);
+  margin-bottom: 24px; padding: 10px 14px; background: var(--bg);
+  border-radius: var(--radius); border: 1px solid var(--border);
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-hint); flex-shrink: 0; }
+.dot.ok      { background: #639922; }
+.dot.err     { background: #e24b4a; }
+.dot.loading { background: #ba7517; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.spacer { flex: 1; }
+.refresh-btn {
+  background: none; border: none; color: var(--text-hint); cursor: pointer;
+  font-size: 12px; padding: 2px 6px; border-radius: 4px; font-family: var(--font);
+}
+.refresh-btn:hover { background: var(--border); color: var(--text-muted); }
+.buttons { display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; }
+.launch-btn {
+  display: flex; align-items: center; gap: 16px; padding: 20px;
+  border-radius: var(--radius); border: 1.5px solid; cursor: pointer;
+  text-decoration: none; transition: opacity 0.15s, transform 0.1s;
+  font-family: var(--font); width: 100%;
+}
+.launch-btn:hover:not(.disabled) { opacity: 0.82; transform: translateY(-1px); }
+.launch-btn.disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+.launch-btn.student    { border-color: var(--blue-border);  background: var(--blue-bg); }
+.launch-btn.researcher { border-color: var(--amber-border); background: var(--amber-bg); }
+.btn-icon { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+.student    .btn-icon { background: var(--blue-border); }
+.researcher .btn-icon { background: var(--amber-border); }
+.btn-body { flex: 1; text-align: left; }
+.btn-title { font-size: 16px; font-weight: 500; margin-bottom: 6px; }
+.student    .btn-title { color: var(--blue-text); }
+.researcher .btn-title { color: var(--amber-text); }
+.btn-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag {
+  font-size: 11px; font-weight: 500; padding: 3px 8px; border-radius: 20px;
+  background: rgba(255,255,255,0.5); border: 1px solid currentColor;
+}
+.student    .tag { color: var(--blue-border); }
+.researcher .tag { color: var(--amber-border); }
+.tag.unavailable { opacity: 0.45; text-decoration: line-through; }
+.btn-badge { font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 20px; flex-shrink: 0; align-self: center; }
+.student    .btn-badge { background: var(--blue-border);  color: var(--blue-bg); }
+.researcher .btn-badge { background: var(--amber-border); color: var(--amber-bg); }
+.launch-btn.disabled .btn-badge { background: var(--gray-bg); color: var(--gray-text); border: 1px solid var(--gray-border); }
+.btn-arrow { color: var(--text-hint); font-size: 18px; flex-shrink: 0; align-self: center; }
+.student:not(.disabled)    .btn-arrow { color: var(--blue-border); }
+.researcher:not(.disabled) .btn-arrow { color: var(--amber-border); }
+.footer { font-size: 11px; color: var(--text-hint); text-align: center; line-height: 1.6; }
+.footer a { color: var(--text-hint); }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>JupyterHub GPU access</h1>
+  <p class="subtitle">Live availability based on current cluster usage.</p>
+
+  <div class="status-bar">
+    <span class="dot loading" id="dot"></span>
+    <span id="status-text">Loading…</span>
+    <span class="spacer"></span>
+    <button class="refresh-btn" onclick="refresh()">↻ Refresh</button>
+  </div>
+
+  <div class="buttons">
+    <a id="btn-student" class="launch-btn student disabled" href="https://ccu-jupyterhub.inf.uni-konstanz.de/hub/login?next=%2Fhub%2Fhome" target="_blank">
+      <div class="btn-icon">🎓</div>
+      <div class="btn-body">
+        <div class="btn-title">Student session</div>
+        <div class="btn-tags" id="tags-student"></div>
+      </div>
+      <span class="btn-badge" id="badge-student">—</span>
+      <span class="btn-arrow">›</span>
+    </a>
+
+    <a id="btn-researcher" class="launch-btn researcher disabled" href="https://ccu-jupyterhub.inf.uni-konstanz.de/hub/login?next=%2Fhub%2Fhome" target="_blank">
+      <div class="btn-icon">🔬</div>
+      <div class="btn-body">
+        <div class="btn-title">Researcher session</div>
+        <div class="btn-tags" id="tags-researcher"></div>
+      </div>
+      <span class="btn-badge" id="badge-researcher">—</span>
+      <span class="btn-arrow">›</span>
+    </a>
+  </div>
+
+  <div class="footer">
+    Data from <a href="https://ccu-k8s.inf.uni-konstanz.de/status.html" target="_blank">ccu-k8s.inf.uni-konstanz.de</a> ·
+    <span id="last-update">—</span>
+  </div>
+</div>
+
+<script>
+const STUDENT_MIG_LIMIT = 4; // MIG slices available to students
+
+async function refresh() {
+  document.getElementById('dot').className           = 'dot loading';
+  document.getElementById('status-text').textContent = 'Loading…';
+  try {
+    const r = await fetch('./status.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('Could not load status.json (HTTP ' + r.status + ')');
+    render(await r.json());
+  } catch (e) {
+    renderError(e.message);
+  }
+}
+
+function tag(text, available) {
+  return `<span class="tag${available ? '' : ' unavailable'}">${text}</span>`;
+}
+
+function render(d) {
+  const sWholeFree = d.studentLimit    - d.studentActive;
+  const rWholeFree = d.researcherLimit - d.researcherActive;
+  const migFree    = Math.min(d.freeMIG, STUDENT_MIG_LIMIT);
+
+  // ── Student button ──────────────────────────────────────────────────────
+  const studentOpen = sWholeFree > 0 || migFree > 0;
+  const btnS = document.getElementById('btn-student');
+  btnS.classList.toggle('disabled', !studentOpen);
+  document.getElementById('badge-student').textContent = studentOpen ? 'Available' : 'Full';
+
+  const sTags = [];
+  if (sWholeFree > 0) {
+    sTags.push(tag(sWholeFree + ' whole GPU slot' + (sWholeFree !== 1 ? 's' : '') + ' free', true));
+  } else {
+    sTags.push(tag('No whole GPU slots', false));
+  }
+  if (migFree > 0) {
+    sTags.push(tag(migFree + ' MIG slice' + (migFree !== 1 ? 's' : '') + ' free', true));
+  } else {
+    sTags.push(tag('No MIG slices', false));
+  }
+  document.getElementById('tags-student').innerHTML = sTags.join('');
+
+  // ── Researcher button ───────────────────────────────────────────────────
+  const researcherOpen = rWholeFree > 0;
+  const btnR = document.getElementById('btn-researcher');
+  btnR.classList.toggle('disabled', !researcherOpen);
+  document.getElementById('badge-researcher').textContent = researcherOpen ? 'Available' : 'Full';
+
+  const rTags = [];
+  if (rWholeFree > 0) {
+    rTags.push(tag(rWholeFree + ' whole GPU slot' + (rWholeFree !== 1 ? 's' : '') + ' free', true));
+  } else {
+    rTags.push(tag('No whole GPU slots', false));
+  }
+  document.getElementById('tags-researcher').innerHTML = rTags.join('');
+
+  document.getElementById('dot').className           = 'dot ok';
+  document.getElementById('status-text').textContent = 'Live data loaded';
+  if (d.updatedAt) {
+    const ago = Math.round((Date.now() - new Date(d.updatedAt)) / 60000);
+    document.getElementById('last-update').textContent =
+      'Updated ' + (ago < 2 ? 'just now' : ago + ' min ago');
+  }
+}
+
+function renderError(msg) {
+  document.getElementById('dot').className           = 'dot err';
+  document.getElementById('status-text').textContent = 'Error: ' + msg;
+  ['btn-student', 'btn-researcher'].forEach(id => document.getElementById(id).classList.add('disabled'));
+  document.getElementById('tags-student').innerHTML    = '<span class="tag unavailable">Could not load status</span>';
+  document.getElementById('tags-researcher').innerHTML = '<span class="tag unavailable">Could not load status</span>';
+}
+
+refresh();
+</script>
+</body>
+</html>

@@ -45,8 +45,9 @@ def parse_status(html, users):
     # ── Pod counting ──────────────────────────────────────────────────────────
     # Search the ENTIRE page for jupyter-USERNAME pods — no need to limit to
     # a node block since our users dict only contains usernames we care about.
-    active_pods = [m.group(1).lower()
-                   for m in re.finditer(r'jupyter-([\w-]+)', text)]
+    # Use a set to deduplicate — the same pod appears in multiple sections.
+    active_pods = set(m.group(1).lower()
+                      for m in re.finditer(r'jupyter-([\w-]+)', text))
 
     student_active    = 0
     researcher_active = 0

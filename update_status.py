@@ -37,88 +37,66 @@ def fetch_status():
 
 
 def parse_status(html, users):
-    # Strip HTML tags but preserve newlines
+    # Strip HTML tags but preserve newlines from <br> and block elements
     text = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)
+    text = re.sub(r'<(?:tr|p|div|li)[^>]*>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'&nbsp;', ' ', text)
     text = re.sub(r'&amp;',  '&', text)
 
-    lines = text.splitlines()
-
     # ── Pod counting ──────────────────────────────────────────────────────────
-    # Strategy:
-    # 1. Find the line containing "nvidia.com/gpu"
-    # 2. Within that section, find the line containing JUPYTER_NODE
-    # 3. Collect all jupyter-* pods indented under that node
-    #    until we hit a line at the same or lower indentation level
+    # Find the nvidia.com/gpu section, then within it find the slice of text
+    # between "kiaransalee" and the next node name (or next resource type).
+    # Node names in this cluster: asmodeus, belial, demogorgon, fierna,
+    # kiaransalee, tiamat, vecna, zariel — all end before the next │ ├ └ tree char
+    # at the same level.
+    #
+    # Simpler approach: find "kiaransalee" inside the gpu section, then
+    # extract text until the next occurrence of another node or "nvidia.com".
 
     student_active    = 0
     researcher_active = 0
 
-    # Find nvidia.com/gpu section start
-    gpu_section_start = None
-    for i, line in enumerate(lines):
-        if 'nvidia.com/gpu' in line and 'mig' not in line.lower():
-            gpu_section_start = i
-            break
+    # Isolate the nvidia.com/gpu section (everything before the first nvidia.com/mig)
+    gpu_match = re.search(r'nvidia\.com/gpu(.*?)nvidia\.com/mig', text, re.DOTALL)
+    if gpu_match:
+        gpu_section = gpu_match.group(1)
 
-    if gpu_section_start is not None:
-        # Find kiaransalee within the gpu section
-        node_line_idx = None
-        node_indent   = None
-        for i in range(gpu_section_start + 1, len(lines)):
-            line = lines[i]
-            # Stop if we hit the next resource type (e.g. nvidia.com/mig or memory section)
-            if re.match(r'\s{0,4}\S', line) and i > gpu_section_start + 1:
-                if 'nvidia.com' in line or ('kiaransalee' not in line and node_line_idx is not None):
-                    if node_line_idx is not None:
-                        break
-            if JUPYTER_NODE in line:
-                node_line_idx = i
-                # Measure indentation of the node line
-                node_indent = len(line) - len(line.lstrip())
-                break
+        # Within the gpu section, find the kiaransalee block:
+        # text from "kiaransalee" up to the next node-level entry
+        # Node-level entries are preceded by tree chars (├─ or └─) with similar indentation
+        node_match = re.search(
+            r'kiaransalee(.*?)(?=├─|└─|nvidia\.com|$)',
+            gpu_section, re.DOTALL
+        )
+        if node_match:
+            node_block = node_match.group(1)
+            print("DEBUG node_block:", repr(node_block[:300]))
 
-        if node_line_idx is not None:
-            # Collect jupyter-* pods on lines MORE indented than the node line
-            kiaransalee_pods = set()
-            for i in range(node_line_idx + 1, len(lines)):
-                line = lines[i]
-                if not line.strip():
-                    continue
-                line_indent = len(line) - len(line.lstrip())
-                # Stop when we're back to node-level indentation or less
-                if line_indent <= node_indent:
-                    break
-                m = re.search(r'jupyter-([\w-]+)', line)
-                if m:
-                    kiaransalee_pods.add(m.group(1).lower())
+            kiaransalee_pods = set(
+                m.group(1).lower()
+                for m in re.finditer(r'jupyter-([\w-]+)', node_block)
+            )
+            print("DEBUG kiaransalee_pods:", kiaransalee_pods)
 
             for pod in kiaransalee_pods:
                 role = users.get(pod)
                 if role == 'student': student_active    += 1
-                else:                 researcher_active += 1  # known researcher OR unknown = researcher
+                else:                 researcher_active += 1
 
-    # ── MIG free slice counting ───────────────────────────────────────────────
-    # Only count mig-1g.10gb slices (the small student-usable ones) on kiaransalee.
-    # The last number on the kiaransalee line is the free count.
-    free_mig     = 0
-    in_mig_1g    = False
-    for line in lines:
-        if 'nvidia.com/mig-1g' in line:
-            in_mig_1g = True
-            continue
-        if in_mig_1g:
-            if JUPYTER_NODE in line:
-                nums = re.findall(r'[\d.]+', line)
-                if nums:
-                    try:
-                        free_mig = int(float(nums[-1]))
-                    except ValueError:
-                        pass
-            # Stop at next nvidia.com/ line
-            if 'nvidia.com' in line:
-                in_mig_1g = False
+    # ── MIG free slice counting (mig-1g.10gb only) ───────────────────────────
+    free_mig  = 0
+    mig_match = re.search(r'nvidia\.com/mig-1g\.10gb(.*?)(?=nvidia\.com/mig|$)', text, re.DOTALL)
+    if mig_match:
+        mig_section = mig_match.group(1)
+        node_line   = re.search(r'kiaransalee[^\n]*', mig_section)
+        if node_line:
+            nums = re.findall(r'[\d.]+', node_line.group(0))
+            if nums:
+                try:
+                    free_mig = int(float(nums[-1]))
+                except ValueError:
+                    pass
 
     # ── Timestamp ─────────────────────────────────────────────────────────────
     ts_match  = re.search(r'Cluster status\s+([\w,: +]+\d{4})', text)

@@ -7,6 +7,7 @@ Writes status.json with only counts — no usernames ever leave this script.
 import csv
 import json
 import re
+import time
 import urllib.request
 from datetime import datetime, timezone
 
@@ -24,16 +25,23 @@ def load_users(path='users.csv'):
         reader.fieldnames = [h.strip().lower() for h in reader.fieldnames]
         for row in reader:
             username = row.get('github account', '').strip().lower()
-            role     = row.get('category', '').strip().lower()
+            role     = (row.get('category') or '').strip().lower()
             if username and role:
                 users[username] = role
     return users
 
 
-def fetch_status():
+def fetch_status(retries=3, delay=10):
     req = urllib.request.Request(STATUS_URL, headers={'User-Agent': 'gpu-status-bot/1.0'})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return r.read().decode('utf-8', errors='replace')
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.read().decode('utf-8', errors='replace')
+        except Exception as e:
+            print(f"Attempt {attempt} failed: {e}")
+            if attempt < retries:
+                time.sleep(delay)
+    raise RuntimeError(f"Failed to fetch status page after {retries} attempts")
 
 
 def parse_status(html, users):

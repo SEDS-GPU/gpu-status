@@ -4,10 +4,11 @@ Reads users.csv and scrapes the cluster status page.
 Writes status.json with only counts — no usernames ever leave this script.
 
 Counting rules:
-- nvidia.com/gpu -> kiaransalee: all pods except system ones count.
-  Known role in CSV = that role. Unknown = researcher.
-- nvidia.com/mig-* -> kiaransalee: all jupyter-* pods count.
-  Known role in CSV = that role. Unknown = student.
+- nvidia.com/gpu -> kiaransalee: all pods count except system ones (kube-*, dnsutils-*).
+  jupyter-USERNAME: look up CSV, unknown = researcher.
+  manually named pods: look up CSV, unknown = researcher.
+- nvidia.com/mig-* -> kiaransalee: jupyter-* pods only.
+  look up CSV, unknown = student.
 """
 
 import csv
@@ -23,7 +24,6 @@ JUPYTER_NODE = 'kiaransalee'
 STUDENT_LIMIT    = 2
 RESEARCHER_LIMIT = 4
 
-# Pod name prefixes that are system/infrastructure — never count these
 SYSTEM_PREFIXES = ('kube-', 'dnsutils-')
 
 
@@ -53,120 +53,128 @@ def fetch_status(retries=3, delay=10):
     raise RuntimeError(f"Failed to fetch status page after {retries} attempts")
 
 
-def extract_node_block(text, section_pattern, node):
+def get_kiaransalee_pods(lines, start_idx, end_idx):
     """
-    Find a section matching section_pattern, then extract the block of text
-    between node and the next sibling node or section boundary.
-    Returns the block text or None.
+    Given lines between start_idx and end_idx, find the kiaransalee node
+    and return all pod names under it.
+
+    Pod lines are distinguished from node lines by containing &#9474; (│),
+    which is the tree character used for child entries.
     """
-    section_match = re.search(section_pattern, text, re.DOTALL)
-    if not section_match:
-        return None
-    section_text = section_match.group(1)
-    node_match = re.search(
-        re.escape(node) + r'(.*?)(?=&#9500;&#9472;|&#9492;&#9472;|nvidia\.com|$)',
-        section_text, re.DOTALL
-    )
-    if not node_match:
-        return None
-    return node_match.group(1)
+    # Find kiaransalee line
+    node_idx = None
+    for i in range(start_idx, end_idx):
+        if JUPYTER_NODE in lines[i]:
+            node_idx = i
+            break
+    if node_idx is None:
+        return set(), set()  # (jupyter_pods, manual_pods)
 
+    jupyter_pods = set()
+    manual_pods  = set()
 
-def get_pods_from_block(block):
-    """Extract all pod names from a node block, excluding system pods."""
-    pods = set()
-    for m in re.finditer(r'([\w][\w-]+)', block):
-        name = m.group(1).lower()
-        # Skip numbers, short tokens, and system pods
-        if len(name) < 3:
+    for i in range(node_idx + 1, end_idx):
+        line = lines[i]
+        # Pod lines contain &#9474; (│) — child indentation marker
+        # Node-sibling lines do not
+        if '&#9474;' not in line:
+            break  # back to node level, kiaransalee block ended
+
+        # Check for jupyter-USERNAME pod
+        m = re.search(r'jupyter-([\w-]+)', line)
+        if m:
+            jupyter_pods.add(m.group(1).lower())
             continue
+
+        # Manual pod: strip all HTML entities and tree chars, get first token
+        clean = re.sub(r'&#\d+;', ' ', line).strip()
+        tokens = clean.split()
+        if not tokens:
+            continue
+        name = tokens[0].lower()
+
+        # Skip system pods, numeric tokens, and very short tokens
         if any(name.startswith(p) for p in SYSTEM_PREFIXES):
             continue
-        # Skip tokens that look like numbers or percentages
-        if re.match(r'^[\d.]+$', name):
+        if re.match(r'^[\d.]+', name):
             continue
-        pods.add(name)
-    return pods
+        if len(name) < 3:
+            continue
 
+        manual_pods.add(name)
 
-def get_jupyter_pods_from_block(block):
-    """Extract only jupyter-USERNAME pods from a node block."""
-    return set(
-        m.group(1).lower()
-        for m in re.finditer(r'jupyter-([\w-]+)', block)
-    )
+    return jupyter_pods, manual_pods
 
 
 def parse_status(html, users):
-    # Strip HTML tags but preserve structure
+    # Strip HTML tags but preserve newlines and keep HTML entities intact
     text = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)
     text = re.sub(r'<(?:tr|p|div|li)[^>]*>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'&amp;', '&', text)
-    # Keep HTML entities for tree chars as-is (&#9474; &#9492; &#9472; &#9500;)
-    # so we can use them as delimiters
+
+    lines = text.splitlines()
+
+    # Find section boundaries
+    gpu_start = gpu_end = None
+    mig_starts = []
+
+    for i, line in enumerate(lines):
+        if 'nvidia.com/gpu' in line and 'mig' not in line.lower() and gpu_start is None:
+            gpu_start = i
+        elif gpu_start is not None and gpu_end is None and 'nvidia.com/mig' in line:
+            gpu_end = i
+            mig_starts.append(i)
+        elif 'nvidia.com/mig' in line:
+            mig_starts.append(i)
 
     student_active    = 0
     researcher_active = 0
 
-    # ── GPU section: count all non-system pods on kiaransalee ─────────────────
-    gpu_block = extract_node_block(
-        text,
-        r'nvidia\.com/gpu(.*?)nvidia\.com/mig',
-        JUPYTER_NODE
-    )
-    if gpu_block:
-        # Get all pod-like tokens, excluding system pods
-        for m in re.finditer(r'jupyter-([\w-]+)|([\w][\w-]{2,})', gpu_block):
-            if m.group(1):
-                # jupyter-USERNAME pod
-                name = m.group(1).lower()
-                role = users.get(name)
-                if role == 'student': student_active    += 1
-                else:                 researcher_active += 1
-            else:
-                name = m.group(2).lower()
-                # Skip system pods, numbers, tree artifacts, and jupyter- (already handled)
-                if any(name.startswith(p) for p in SYSTEM_PREFIXES):
-                    continue
-                if re.match(r'^[\d.]+$', name):
-                    continue
-                if name in ('kiaransalee', 'nvidia', 'com', 'gpu', 'mig'):
-                    continue
-                # This is a manually created pod — count as researcher unless in CSV
-                role = users.get(name)
-                if role == 'student': student_active    += 1
-                else:                 researcher_active += 1
+    # ── GPU section ───────────────────────────────────────────────────────────
+    if gpu_start is not None and gpu_end is not None:
+        jupyter_pods, manual_pods = get_kiaransalee_pods(lines, gpu_start, gpu_end)
+        print("DEBUG GPU jupyter_pods:", jupyter_pods)
+        print("DEBUG GPU manual_pods:", manual_pods)
 
-    # ── MIG sections: count jupyter-* pods on kiaransalee as students ─────────
-    # Find ALL mig sections and collect jupyter pods across all of them
+        for pod in jupyter_pods:
+            role = users.get(pod)
+            if role == 'student': student_active    += 1
+            else:                 researcher_active += 1  # unknown = researcher
+
+        for pod in manual_pods:
+            role = users.get(pod)
+            if role == 'student': student_active    += 1
+            else:                 researcher_active += 1  # unknown = researcher
+
+    # ── MIG sections ─────────────────────────────────────────────────────────
     mig_jupyter_pods = set()
-    for mig_match in re.finditer(r'nvidia\.com/mig-[\w."]+(.*?)(?=nvidia\.com/|$)', text, re.DOTALL):
-        mig_section = mig_match.group(1)
-        node_match  = re.search(
-            re.escape(JUPYTER_NODE) + r'(.*?)(?=&#9500;&#9472;|&#9492;&#9472;|nvidia\.com|$)',
-            mig_section, re.DOTALL
-        )
-        if node_match:
-            mig_jupyter_pods |= get_jupyter_pods_from_block(node_match.group(1))
+    for idx, mig_start in enumerate(mig_starts):
+        mig_end = mig_starts[idx + 1] if idx + 1 < len(mig_starts) else len(lines)
+        j_pods, _ = get_kiaransalee_pods(lines, mig_start, mig_end)
+        mig_jupyter_pods |= j_pods
 
+    print("DEBUG MIG jupyter_pods:", mig_jupyter_pods)
     for pod in mig_jupyter_pods:
         role = users.get(pod)
         if role == 'researcher': researcher_active += 1
-        else:                    student_active    += 1  # known student OR unknown = student
+        else:                    student_active    += 1  # unknown = student
 
     # ── MIG free slice counting (mig-1g.10gb only) ───────────────────────────
-    free_mig  = 0
-    mig_match = re.search(r'nvidia\.com/mig-1g\.10gb(.*?)(?=nvidia\.com/mig|$)', text, re.DOTALL)
-    if mig_match:
-        node_line = re.search(r'kiaransalee[^\n]*', mig_match.group(1))
-        if node_line:
-            nums = re.findall(r'[\d.]+', node_line.group(0))
-            if nums:
-                try:
-                    free_mig = int(float(nums[-1]))
-                except ValueError:
-                    pass
+    free_mig = 0
+    for i, line in enumerate(lines):
+        if 'nvidia.com/mig-1g' in line:
+            # Look for kiaransalee in the next few lines
+            for j in range(i + 1, min(i + 10, len(lines))):
+                if JUPYTER_NODE in lines[j]:
+                    nums = re.findall(r'[\d.]+', lines[j])
+                    if nums:
+                        try:
+                            free_mig = int(float(nums[-1]))
+                        except ValueError:
+                            pass
+                    break
+            break
 
     # ── Timestamp ─────────────────────────────────────────────────────────────
     ts_match  = re.search(r'Cluster status\s+([\w,: +]+\d{4})', text)

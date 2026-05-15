@@ -1,9 +1,9 @@
 {
   "studentActive": 1,
-  "researcherActive": 2,
+  "researcherActive": 1,
   "freeMIG": 0,
   "studentLimit": 2,
   "researcherLimit": 4,
-  "timestamp": "Fri, 15 May 2026 17:12:01 +0000",
-  "updatedAt": "2026-05-15T17:19:51.654897+00:00"
+  "timestamp": "Fri, 15 May 2026 19:12:01 +0000",
+  "updatedAt": "2026-05-15T19:14:12.984431+00:00"
 }

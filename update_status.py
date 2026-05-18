@@ -160,21 +160,19 @@ def parse_status(html, users):
         if role == 'researcher': researcher_active += 1
         else:                    student_active    += 1  # unknown = student
 
-    # ── MIG free slice counting (mig-1g.10gb only) ───────────────────────────
+    # ── MIG free slice counting (mig-3g.40gb and mig-4g.40gb) ──────────────────
     free_mig = 0
     for i, line in enumerate(lines):
-        if 'nvidia.com/mig-1g' in line:
-            # Look for kiaransalee in the next few lines
+        if 'nvidia.com/mig-3g' in line or 'nvidia.com/mig-4g' in line:
             for j in range(i + 1, min(i + 10, len(lines))):
                 if JUPYTER_NODE in lines[j]:
                     nums = re.findall(r'[\d.]+', lines[j])
                     if nums:
                         try:
-                            free_mig = int(float(nums[-1]))
+                            free_mig += int(float(nums[-1]))
                         except ValueError:
                             pass
                     break
-            break
 
     # ── Timestamp ─────────────────────────────────────────────────────────────
     ts_match  = re.search(r'Cluster status\s+([\w,: +]+\d{4})', text)

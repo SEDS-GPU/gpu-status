@@ -4,7 +4,7 @@ Reads users.csv and scrapes the cluster status page.
 Writes status.json with only counts — no usernames ever leave this script.
 
 Counting rules:
-- nvidia.com/gpu -> kiaransalee: all pods count except system ones (kube-*, dnsutils-*).
+- nvidia.com/gpu -> kiaransalee: all pods except system ones count.
   jupyter-USERNAME: look up CSV, unknown = researcher.
   manually named pods: look up CSV, unknown = researcher.
 - nvidia.com/mig-* -> kiaransalee: jupyter-* pods only.
@@ -23,6 +23,7 @@ JUPYTER_NODE = 'kiaransalee'
 
 STUDENT_LIMIT    = 2
 RESEARCHER_LIMIT = 4
+MIG_LIMIT        = 4
 
 SYSTEM_PREFIXES = ('kube-', 'dnsutils-')
 
@@ -56,44 +57,36 @@ def fetch_status(retries=3, delay=10):
 def get_kiaransalee_pods(lines, start_idx, end_idx):
     """
     Given lines between start_idx and end_idx, find the kiaransalee node
-    and return all pod names under it.
-
-    Pod lines are distinguished from node lines by containing &#9474; (│),
-    which is the tree character used for child entries.
+    and return all pod names under it as (jupyter_pods, manual_pods).
+    Pod lines are distinguished by containing &#9474; (│).
     """
-    # Find kiaransalee line
     node_idx = None
     for i in range(start_idx, end_idx):
         if JUPYTER_NODE in lines[i]:
             node_idx = i
             break
     if node_idx is None:
-        return set(), set()  # (jupyter_pods, manual_pods)
+        return set(), set()
 
     jupyter_pods = set()
     manual_pods  = set()
 
     for i in range(node_idx + 1, end_idx):
         line = lines[i]
-        # Pod lines contain &#9474; (│) — child indentation marker
-        # Node-sibling lines do not
         if '&#9474;' not in line:
-            break  # back to node level, kiaransalee block ended
+            break
 
-        # Check for jupyter-USERNAME pod
         m = re.search(r'jupyter-([\w-]+)', line)
         if m:
             jupyter_pods.add(m.group(1).lower())
             continue
 
-        # Manual pod: strip all HTML entities and tree chars, get first token
-        clean = re.sub(r'&#\d+;', ' ', line).strip()
+        clean  = re.sub(r'&#\d+;', ' ', line).strip()
         tokens = clean.split()
         if not tokens:
             continue
         name = tokens[0].lower()
 
-        # Skip system pods, numeric tokens, and very short tokens
         if any(name.startswith(p) for p in SYSTEM_PREFIXES):
             continue
         if re.match(r'^[\d.]+', name):
@@ -107,7 +100,6 @@ def get_kiaransalee_pods(lines, start_idx, end_idx):
 
 
 def parse_status(html, users):
-    # Strip HTML tags but preserve newlines and keep HTML entities intact
     text = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)
     text = re.sub(r'<(?:tr|p|div|li)[^>]*>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<[^>]+>', '', text)
@@ -128,24 +120,25 @@ def parse_status(html, users):
         elif 'nvidia.com/mig' in line:
             mig_starts.append(i)
 
-    student_active    = 0
-    researcher_active = 0
+    # Four counters
+    student_gpu    = 0  # students on whole GPU slots
+    researcher_gpu = 0  # researchers on whole GPU slots
+    student_mig    = 0  # students on MIG slices
+    researcher_mig = 0  # researchers on MIG slices
 
     # ── GPU section ───────────────────────────────────────────────────────────
     if gpu_start is not None and gpu_end is not None:
         jupyter_pods, manual_pods = get_kiaransalee_pods(lines, gpu_start, gpu_end)
-        print("DEBUG GPU jupyter_pods:", jupyter_pods)
-        print("DEBUG GPU manual_pods:", manual_pods)
 
         for pod in jupyter_pods:
             role = users.get(pod)
-            if role == 'student': student_active    += 1
-            else:                 researcher_active += 1  # unknown = researcher
+            if role == 'student': student_gpu    += 1
+            else:                 researcher_gpu += 1
 
         for pod in manual_pods:
             role = users.get(pod)
-            if role == 'student': student_active    += 1
-            else:                 researcher_active += 1  # unknown = researcher
+            if role == 'student': student_gpu    += 1
+            else:                 researcher_gpu += 1
 
     # ── MIG sections ─────────────────────────────────────────────────────────
     mig_jupyter_pods = set()
@@ -154,13 +147,12 @@ def parse_status(html, users):
         j_pods, _ = get_kiaransalee_pods(lines, mig_start, mig_end)
         mig_jupyter_pods |= j_pods
 
-    print("DEBUG MIG jupyter_pods:", mig_jupyter_pods)
     for pod in mig_jupyter_pods:
         role = users.get(pod)
-        if role == 'researcher': researcher_active += 1
-        else:                    student_active    += 1  # unknown = student
+        if role == 'researcher': researcher_mig += 1
+        else:                    student_mig    += 1
 
-    # ── MIG free slice counting (mig-3g.40gb and mig-4g.40gb) ──────────────────
+    # ── MIG free slice counting (mig-3g.40gb and mig-4g.40gb) ────────────────
     free_mig = 0
     for i, line in enumerate(lines):
         if 'nvidia.com/mig-3g' in line or 'nvidia.com/mig-4g' in line:
@@ -179,11 +171,14 @@ def parse_status(html, users):
     timestamp = ts_match.group(1).strip() if ts_match else None
 
     return dict(
-        studentActive=student_active,
-        researcherActive=researcher_active,
+        studentGPU=student_gpu,
+        researcherGPU=researcher_gpu,
+        studentMIG=student_mig,
+        researcherMIG=researcher_mig,
         freeMIG=free_mig,
         studentLimit=STUDENT_LIMIT,
         researcherLimit=RESEARCHER_LIMIT,
+        migLimit=MIG_LIMIT,
         timestamp=timestamp,
         updatedAt=datetime.now(timezone.utc).isoformat(),
     )

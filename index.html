@@ -148,7 +148,7 @@ function render(d) {
   // How many researcher GPU slots are borrowed by students?
   // Researcher slots: based only on how many researchers are active
   // Students borrowing doesn't reduce researcher availability — researchers always get their slots
-  const researcherSlotsBorrowed = d.studentGPU;
+  const researcherSlotsBorrowed = Math.max(0, d.studentGPU - d.studentLimit);
   const researcherSlotsFree     = d.researcherLimit - d.researcherGPU;
 
   const migFree    = d.freeMIG;

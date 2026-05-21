@@ -74,6 +74,7 @@ h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
   background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.4);
   color: rgba(255,255,255,0.9);
 }
+.tag.warn { background: rgba(255,200,0,0.2); border-color: rgba(255,200,0,0.6); color: rgba(255,230,100,0.95); }
 .tag.unavailable { opacity: 0.45; text-decoration: line-through; }
 .btn-badge { font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 20px; flex-shrink: 0; align-self: center; }
 .student    .btn-badge { background: var(--blue-border);  color: var(--blue-bg); }
@@ -83,7 +84,6 @@ h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
 .student:not(.disabled)    .btn-arrow { color: var(--blue-border); }
 .researcher:not(.disabled) .btn-arrow { color: var(--amber-border); }
 .footer { font-size: 11px; color: var(--text-hint); text-align: center; line-height: 1.6; }
-.footer a { color: var(--text-hint); }
 </style>
 </head>
 <body>
@@ -126,8 +126,6 @@ h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
 </div>
 
 <script>
-const STUDENT_MIG_LIMIT = 4; // MIG slices available to students
-
 async function refresh() {
   document.getElementById('dot').className           = 'dot loading';
   document.getElementById('status-text').textContent = 'Loading…';
@@ -140,46 +138,72 @@ async function refresh() {
   }
 }
 
-function tag(text, available) {
-  return `<span class="tag${available ? '' : ' unavailable'}">${text}</span>`;
+function tag(text, style) {
+  // style: 'ok', 'warn', 'unavailable'
+  const cls = style === 'ok' ? '' : (' ' + style);
+  return `<span class="tag${cls}">${text}</span>`;
 }
 
 function render(d) {
-  const sWholeFree = d.studentLimit    - d.studentActive;
-  const rWholeFree = d.researcherLimit - d.researcherActive;
-  const migFree    = Math.min(d.freeMIG, STUDENT_MIG_LIMIT);
+  // How many researcher GPU slots are borrowed by students?
+  const researcherSlotsTotal    = d.researcherLimit;
+  const researcherSlotsTaken    = d.researcherGPU + d.studentGPU; // all whole-GPU users
+  const researcherSlotsBorrowed = d.studentGPU;                   // students on whole GPUs
+  const researcherSlotsFree     = researcherSlotsTotal - researcherSlotsTaken;
+
+  const migFree    = d.freeMIG;
+  const migBorrowed = d.researcherMIG; // researchers on MIG (unusual)
 
   // ── Student button ──────────────────────────────────────────────────────
-  const studentOpen = sWholeFree > 0 || migFree > 0;
+  // Students can use MIG slices or whole GPU slots if researchers aren't using them
+  const studentOpen = migFree > 0 || researcherSlotsFree > 0;
   const btnS = document.getElementById('btn-student');
   btnS.classList.toggle('disabled', !studentOpen);
   document.getElementById('badge-student').textContent = studentOpen ? 'Available' : 'Full';
 
   const sTags = [];
-  if (sWholeFree > 0) {
-    sTags.push(tag(sWholeFree + ' whole GPU slot' + (sWholeFree !== 1 ? 's' : '') + ' free', true));
-  } else {
-    sTags.push(tag('No whole GPU slots', false));
-  }
+
+  // MIG slices
   if (migFree > 0) {
-    sTags.push(tag(migFree + ' MIG slice' + (migFree !== 1 ? 's' : '') + ' free', true));
+    sTags.push(tag(migFree + ' MIG slice' + (migFree !== 1 ? 's' : '') + ' free', 'ok'));
   } else {
-    sTags.push(tag('No MIG slices', false));
+    sTags.push(tag('No MIG slices free', 'unavailable'));
   }
+
+  // Show how many students are already borrowing researcher slots
+  if (researcherSlotsBorrowed > 0) {
+    sTags.push(tag(researcherSlotsBorrowed + ' researcher slot' + (researcherSlotsBorrowed !== 1 ? 's' : '') + ' borrowed by student' + (researcherSlotsBorrowed !== 1 ? 's' : ''), 'warn'));
+  }
+
+  // MIG usage summary
+  if (d.studentMIG > 0) {
+    sTags.push(tag(d.studentMIG + ' student' + (d.studentMIG !== 1 ? 's' : '') + ' on MIG', 'ok'));
+  }
+
   document.getElementById('tags-student').innerHTML = sTags.join('');
 
   // ── Researcher button ───────────────────────────────────────────────────
-  const researcherOpen = rWholeFree > 0;
+  const researcherOpen = researcherSlotsFree > 0;
   const btnR = document.getElementById('btn-researcher');
   btnR.classList.toggle('disabled', !researcherOpen);
   document.getElementById('badge-researcher').textContent = researcherOpen ? 'Available' : 'Full';
 
   const rTags = [];
-  if (rWholeFree > 0) {
-    rTags.push(tag(rWholeFree + ' whole GPU slot' + (rWholeFree !== 1 ? 's' : '') + ' free', true));
+
+  if (researcherSlotsFree > 0) {
+    let freeText = researcherSlotsFree + ' slot' + (researcherSlotsFree !== 1 ? 's' : '') + ' free';
+    if (researcherSlotsBorrowed > 0) {
+      freeText += ' (' + researcherSlotsBorrowed + ' borrowed by student' + (researcherSlotsBorrowed !== 1 ? 's' : '') + ')';
+    }
+    rTags.push(tag(freeText, 'ok'));
   } else {
-    rTags.push(tag('No whole GPU slots', false));
+    rTags.push(tag('All slots in use', 'unavailable'));
   }
+
+  if (d.researcherGPU > 0) {
+    rTags.push(tag(d.researcherGPU + ' researcher' + (d.researcherGPU !== 1 ? 's' : '') + ' active', 'ok'));
+  }
+
   document.getElementById('tags-researcher').innerHTML = rTags.join('');
 
   document.getElementById('dot').className           = 'dot ok';

@@ -155,8 +155,10 @@ function render(d) {
   const migBorrowed = d.researcherMIG; // researchers on MIG (unusual)
 
   // ── Student button ──────────────────────────────────────────────────────
-  // Students can use MIG slices or whole GPU slots if researchers aren't using them
-  const studentOpen = migFree > 0 || researcherSlotsFree > 0;
+  // Students are within limit if studentGPU <= studentLimit AND migFree > 0 or studentMIG < migLimit
+  const studentGPUFull = d.studentGPU >= d.studentLimit;
+  const studentMIGFull = migFree === 0;
+  const studentOpen    = !studentGPUFull || !studentMIGFull;
   const btnS = document.getElementById('btn-student');
   btnS.classList.toggle('disabled', !studentOpen);
   document.getElementById('badge-student').textContent = studentOpen ? 'Available' : 'Full';
@@ -170,14 +172,17 @@ function render(d) {
     sTags.push(tag('No MIG slices free', 'unavailable'));
   }
 
-  // Show how many students are already borrowing researcher slots
-  if (researcherSlotsBorrowed > 0) {
-    sTags.push(tag(researcherSlotsBorrowed + ' researcher slot' + (researcherSlotsBorrowed !== 1 ? 's' : '') + ' borrowed by student' + (researcherSlotsBorrowed !== 1 ? 's' : ''), 'warn'));
+  // Whole GPU slots
+  if (studentGPUFull) {
+    sTags.push(tag('All ' + d.studentLimit + ' student GPU slots in use', 'unavailable'));
+  } else {
+    const free = d.studentLimit - d.studentGPU;
+    sTags.push(tag(free + ' student GPU slot' + (free !== 1 ? 's' : '') + ' free', 'ok'));
   }
 
-  // MIG usage summary
-  if (d.studentMIG > 0) {
-    sTags.push(tag(d.studentMIG + ' student' + (d.studentMIG !== 1 ? 's' : '') + ' on MIG', 'ok'));
+  // Spillover warning
+  if (researcherSlotsBorrowed > 0) {
+    sTags.push(tag(researcherSlotsBorrowed + ' researcher slot' + (researcherSlotsBorrowed !== 1 ? 's' : '') + ' borrowed', 'warn'));
   }
 
   document.getElementById('tags-student').innerHTML = sTags.join('');

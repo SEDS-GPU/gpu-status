@@ -146,10 +146,10 @@ function tag(text, style) {
 
 function render(d) {
   // How many researcher GPU slots are borrowed by students?
-  const researcherSlotsTotal    = d.researcherLimit;
-  const researcherSlotsTaken    = d.researcherGPU + d.studentGPU; // all whole-GPU users
-  const researcherSlotsBorrowed = d.studentGPU;                   // students on whole GPUs
-  const researcherSlotsFree     = researcherSlotsTotal - researcherSlotsTaken;
+  // Researcher slots: based only on how many researchers are active
+  // Students borrowing doesn't reduce researcher availability — researchers always get their slots
+  const researcherSlotsBorrowed = d.studentGPU;
+  const researcherSlotsFree     = d.researcherLimit - d.researcherGPU;
 
   const migFree    = d.freeMIG;
   const migBorrowed = d.researcherMIG; // researchers on MIG (unusual)

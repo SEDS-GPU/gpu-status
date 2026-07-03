@@ -1,12 +1,12 @@
 {
   "studentGPU": 1,
-  "researcherGPU": 2,
+  "researcherGPU": 3,
   "studentMIG": 0,
   "researcherMIG": 0,
   "freeMIG": 2,
   "studentLimit": 2,
   "researcherLimit": 4,
   "migLimit": 4,
-  "timestamp": "Fri, 03 Jul 2026 10:22:01 +0000",
-  "updatedAt": "2026-07-03T10:24:34.234606+00:00"
+  "timestamp": "Fri, 03 Jul 2026 12:42:01 +0000",
+  "updatedAt": "2026-07-03T12:50:33.324270+00:00"
 }

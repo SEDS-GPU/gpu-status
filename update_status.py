@@ -56,11 +56,18 @@ def fetch_status(retries=3, delay=10):
 
 
 def get_gpu_count(line):
-    """Extract the GPU request count from a pod line (first number after the pod name)."""
-    nums = re.findall(r'[\d.]+', re.sub(r'&#\d+;', ' ', line))
-    for n in nums:
+    """Extract the GPU request count from a pod line.
+    The count appears after the pod name as a column separated by multiple spaces.
+    We split on 2+ spaces to separate the name from the numeric columns.
+    """
+    clean = re.sub(r'&#\d+;', ' ', line).strip()
+    # Split on 2+ spaces to separate pod name from numeric columns
+    parts = re.split(r'\s{2,}', clean)
+    # parts[0] is pod name, parts[1] onwards are numeric columns
+    for part in parts[1:]:
+        part = part.strip()
         try:
-            v = float(n)
+            v = float(part)
             if v >= 1:
                 return int(v)
         except ValueError:

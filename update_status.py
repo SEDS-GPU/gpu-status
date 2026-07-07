@@ -73,7 +73,7 @@ def get_kiaransalee_pods(lines, start_idx, end_idx):
 
     for i in range(node_idx + 1, end_idx):
         line = lines[i]
-        if '&#9474;' not in line:
+        if '&#9474;' not in line and '&#9492;' not in line:
             break
 
         m = re.search(r'jupyter-([\w-]+)', line)

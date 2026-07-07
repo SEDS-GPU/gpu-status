@@ -5,6 +5,7 @@ Writes status.json with only counts — no usernames ever leave this script.
 
 Counting rules:
 - nvidia.com/gpu -> kiaransalee: all pods except system ones count.
+  GPU count is read from the request column (first number on the pod line).
   jupyter-USERNAME: look up CSV, unknown = researcher.
   manually named pods: look up CSV, unknown = researcher.
 - nvidia.com/mig-* -> kiaransalee: jupyter-* pods only.
@@ -54,11 +55,25 @@ def fetch_status(retries=3, delay=10):
     raise RuntimeError(f"Failed to fetch status page after {retries} attempts")
 
 
+def get_gpu_count(line):
+    """Extract the GPU request count from a pod line (first number after the pod name)."""
+    nums = re.findall(r'[\d.]+', re.sub(r'&#\d+;', ' ', line))
+    for n in nums:
+        try:
+            v = float(n)
+            if v >= 1:
+                return int(v)
+        except ValueError:
+            pass
+    return 1  # default to 1 if not found
+
+
 def get_kiaransalee_pods(lines, start_idx, end_idx):
     """
     Given lines between start_idx and end_idx, find the kiaransalee node
-    and return all pod names under it as (jupyter_pods, manual_pods).
-    Pod lines are distinguished by containing &#9474; (│).
+    and return pod counts as (jupyter_pods, manual_pods).
+    Both are dicts of {pod_name: gpu_count}.
+    Pod lines contain &#9474; (│) for middle entries or &#9492; (└) for the last entry.
     """
     node_idx = None
     for i in range(start_idx, end_idx):
@@ -66,19 +81,22 @@ def get_kiaransalee_pods(lines, start_idx, end_idx):
             node_idx = i
             break
     if node_idx is None:
-        return set(), set()
+        return {}, {}
 
-    jupyter_pods = set()
-    manual_pods  = set()
+    jupyter_pods = {}  # name -> gpu count
+    manual_pods  = {}  # name -> gpu count
 
     for i in range(node_idx + 1, end_idx):
         line = lines[i]
+        # Accept both │ (middle child) and └ (last child)
         if '&#9474;' not in line and '&#9492;' not in line:
             break
 
+        gpu_count = get_gpu_count(line)
+
         m = re.search(r'jupyter-([\w-]+)', line)
         if m:
-            jupyter_pods.add(m.group(1).lower())
+            jupyter_pods[m.group(1).lower()] = gpu_count
             continue
 
         clean  = re.sub(r'&#\d+;', ' ', line).strip()
@@ -94,7 +112,7 @@ def get_kiaransalee_pods(lines, start_idx, end_idx):
         if len(name) < 3:
             continue
 
-        manual_pods.add(name)
+        manual_pods[name] = gpu_count
 
     return jupyter_pods, manual_pods
 
@@ -120,37 +138,38 @@ def parse_status(html, users):
         elif 'nvidia.com/mig' in line:
             mig_starts.append(i)
 
-    # Four counters
-    student_gpu    = 0  # students on whole GPU slots
-    researcher_gpu = 0  # researchers on whole GPU slots
-    student_mig    = 0  # students on MIG slices
-    researcher_mig = 0  # researchers on MIG slices
+    # Four counters (in GPU units, not pod counts)
+    student_gpu    = 0
+    researcher_gpu = 0
+    student_mig    = 0
+    researcher_mig = 0
 
     # ── GPU section ───────────────────────────────────────────────────────────
     if gpu_start is not None and gpu_end is not None:
         jupyter_pods, manual_pods = get_kiaransalee_pods(lines, gpu_start, gpu_end)
 
-        for pod in jupyter_pods:
+        for pod, count in jupyter_pods.items():
             role = users.get(pod)
-            if role == 'student': student_gpu    += 1
-            else:                 researcher_gpu += 1
+            if role == 'student': student_gpu    += count
+            else:                 researcher_gpu += count
 
-        for pod in manual_pods:
+        for pod, count in manual_pods.items():
             role = users.get(pod)
-            if role == 'student': student_gpu    += 1
-            else:                 researcher_gpu += 1
+            if role == 'student': student_gpu    += count
+            else:                 researcher_gpu += count
 
     # ── MIG sections ─────────────────────────────────────────────────────────
-    mig_jupyter_pods = set()
+    mig_jupyter_pods = {}
     for idx, mig_start in enumerate(mig_starts):
         mig_end = mig_starts[idx + 1] if idx + 1 < len(mig_starts) else len(lines)
         j_pods, _ = get_kiaransalee_pods(lines, mig_start, mig_end)
-        mig_jupyter_pods |= j_pods
+        for pod, count in j_pods.items():
+            mig_jupyter_pods[pod] = mig_jupyter_pods.get(pod, 0) + count
 
-    for pod in mig_jupyter_pods:
+    for pod, count in mig_jupyter_pods.items():
         role = users.get(pod)
-        if role == 'researcher': researcher_mig += 1
-        else:                    student_mig    += 1
+        if role == 'researcher': researcher_mig += count
+        else:                    student_mig    += count
 
     # ── MIG free slice counting (mig-3g.40gb and mig-4g.40gb) ────────────────
     free_mig = 0

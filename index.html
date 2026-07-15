@@ -15,8 +15,9 @@
   --radius: 10px; --radius-lg: 16px;
   --font: system-ui, -apple-system, sans-serif;
 }
+/* Dark mode via class (manual toggle) or system preference */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not(.light) {
     --bg: #1c1c1a; --surface: #282825; --border: rgba(255,255,255,0.08);
     --text: #e8e6df; --text-muted: #9b9a95; --text-hint: #6b6a65;
     --blue-bg: #0c447c; --blue-border: #85b7eb; --blue-text: #b5d4f4;
@@ -24,16 +25,35 @@
     --gray-bg: #3a3a37; --gray-border: #b4b2a9; --gray-text: #d3d1c7;
   }
 }
+:root.dark {
+  --bg: #1c1c1a; --surface: #282825; --border: rgba(255,255,255,0.08);
+  --text: #e8e6df; --text-muted: #9b9a95; --text-hint: #6b6a65;
+  --blue-bg: #0c447c; --blue-border: #85b7eb; --blue-text: #b5d4f4;
+  --amber-bg: #633806; --amber-border: #ef9f27; --amber-text: #fac775;
+  --gray-bg: #3a3a37; --gray-border: #b4b2a9; --gray-text: #d3d1c7;
+}
 body {
   font-family: var(--font); background: var(--bg); color: var(--text);
   min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px;
+  transition: background 0.2s, color 0.2s;
 }
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
   padding: 32px; width: 100%; max-width: 520px;
 }
-h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
+.card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 4px; }
+h1 { font-size: 22px; font-weight: 500; }
 .subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 28px; }
+
+/* Theme toggle */
+.theme-toggle {
+  background: none; border: 1px solid var(--border); border-radius: 20px;
+  padding: 4px 10px; cursor: pointer; font-size: 14px; color: var(--text-hint);
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  font-family: var(--font); transition: border-color 0.2s;
+}
+.theme-toggle:hover { border-color: var(--text-hint); color: var(--text-muted); }
+
 .status-bar {
   display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted);
   margin-bottom: 24px; padding: 10px 14px; background: var(--bg);
@@ -88,7 +108,10 @@ h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
 </head>
 <body>
 <div class="card">
-  <h1>JupyterHub GPU access</h1>
+  <div class="card-header">
+    <h1>JupyterHub GPU access</h1>
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">☀️ Light</button>
+  </div>
   <p class="subtitle">Live availability based on current cluster usage.</p>
 
   <div class="status-bar">
@@ -126,6 +149,35 @@ h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
 </div>
 
 <script>
+// ── Theme toggle ──────────────────────────────────────────────────────────────
+function getSystemDark() {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function applyTheme(dark) {
+  const root = document.documentElement;
+  root.classList.toggle('dark', dark);
+  root.classList.toggle('light', !dark);
+  document.getElementById('theme-toggle').textContent = dark ? '☀️ Light' : '🌙 Dark';
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+}
+
+function toggleTheme() {
+  const isDark = document.documentElement.classList.contains('dark');
+  applyTheme(!isDark);
+}
+
+// On load: use saved preference, or fall back to system
+(function() {
+  const saved = localStorage.getItem('theme');
+  if (saved) {
+    applyTheme(saved === 'dark');
+  } else {
+    applyTheme(getSystemDark());
+  }
+})();
+
+// ── Status ────────────────────────────────────────────────────────────────────
 async function refresh() {
   document.getElementById('dot').className           = 'dot loading';
   document.getElementById('status-text').textContent = 'Loading…';
@@ -139,23 +191,16 @@ async function refresh() {
 }
 
 function tag(text, style) {
-  // style: 'ok', 'warn', 'unavailable'
   const cls = style === 'ok' ? '' : (' ' + style);
   return `<span class="tag${cls}">${text}</span>`;
 }
 
 function render(d) {
-  // How many researcher GPU slots are borrowed by students?
-  // Researcher slots: based only on how many researchers are active
-  // Students borrowing doesn't reduce researcher availability — researchers always get their slots
   const researcherSlotsBorrowed = Math.max(0, d.studentGPU - d.studentLimit);
   const researcherSlotsFree     = d.researcherLimit - d.researcherGPU - researcherSlotsBorrowed;
-
-  const migFree    = d.freeMIG;
-  const migBorrowed = d.researcherMIG; // researchers on MIG (unusual)
+  const migFree                 = d.freeMIG;
 
   // ── Student button ──────────────────────────────────────────────────────
-  // Students are within limit if studentGPU <= studentLimit AND migFree > 0 or studentMIG < migLimit
   const studentGPUFull = d.studentGPU >= d.studentLimit;
   const studentMIGFull = migFree === 0;
   const studentOpen    = !studentGPUFull || !studentMIGFull;
@@ -164,27 +209,20 @@ function render(d) {
   document.getElementById('badge-student').textContent = studentOpen ? 'Available' : 'Full';
 
   const sTags = [];
-
-  // MIG slices
   if (migFree > 0) {
     sTags.push(tag(migFree + ' MIG slice' + (migFree !== 1 ? 's' : '') + ' free', 'ok'));
   } else {
     sTags.push(tag('No MIG slices free', 'unavailable'));
   }
-
-  // Whole GPU slots
   if (studentGPUFull) {
     sTags.push(tag('All ' + d.studentLimit + ' student GPU slots in use', 'unavailable'));
   } else {
     const free = d.studentLimit - d.studentGPU;
     sTags.push(tag(free + ' student GPU slot' + (free !== 1 ? 's' : '') + ' free', 'ok'));
   }
-
-  // Spillover warning
   if (researcherSlotsBorrowed > 0) {
     sTags.push(tag(researcherSlotsBorrowed + ' researcher slot' + (researcherSlotsBorrowed !== 1 ? 's' : '') + ' borrowed', 'warn'));
   }
-
   document.getElementById('tags-student').innerHTML = sTags.join('');
 
   // ── Researcher button ───────────────────────────────────────────────────
@@ -194,7 +232,6 @@ function render(d) {
   document.getElementById('badge-researcher').textContent = researcherOpen ? 'Available' : 'Full';
 
   const rTags = [];
-
   if (researcherSlotsFree > 0) {
     let freeText = researcherSlotsFree + ' slot' + (researcherSlotsFree !== 1 ? 's' : '') + ' free';
     if (researcherSlotsBorrowed > 0) {
@@ -204,11 +241,9 @@ function render(d) {
   } else {
     rTags.push(tag('All slots in use', 'unavailable'));
   }
-
   if (d.researcherGPU > 0) {
     rTags.push(tag(d.researcherGPU + ' researcher' + (d.researcherGPU !== 1 ? 's' : '') + ' active', 'ok'));
   }
-
   document.getElementById('tags-researcher').innerHTML = rTags.join('');
 
   document.getElementById('dot').className           = 'dot ok';

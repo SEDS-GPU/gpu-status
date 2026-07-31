@@ -2,11 +2,11 @@
   "studentGPU": 1,
   "researcherGPU": 4,
   "studentMIG": 0,
-  "researcherMIG": 1,
-  "freeMIG": 3,
+  "researcherMIG": 0,
+  "freeMIG": 4,
   "studentLimit": 2,
   "researcherLimit": 4,
   "migLimit": 4,
-  "timestamp": "Fri, 31 Jul 2026 21:52:01 +0000",
-  "updatedAt": "2026-07-31T21:55:12.378440+00:00"
+  "timestamp": "Fri, 31 Jul 2026 22:42:01 +0000",
+  "updatedAt": "2026-07-31T22:49:01.194947+00:00"
 }

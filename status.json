@@ -1,5 +1,5 @@
 {
-  "studentGPU": 1,
+  "studentGPU": 0,
   "researcherGPU": 3,
   "studentMIG": 0,
   "researcherMIG": 1,
@@ -7,6 +7,6 @@
   "studentLimit": 2,
   "researcherLimit": 4,
   "migLimit": 4,
-  "timestamp": "Sun, 02 Aug 2026 14:12:01 +0000",
-  "updatedAt": "2026-08-02T14:21:39.657393+00:00"
+  "timestamp": "Sun, 02 Aug 2026 15:42:01 +0000",
+  "updatedAt": "2026-08-02T15:51:00.515983+00:00"
 }

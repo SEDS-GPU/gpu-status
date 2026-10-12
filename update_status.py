@@ -68,25 +68,27 @@ def fetch_status(retries=3, delay=10):
 # ── Page → plain text lines ──────────────────────────────────────────────────
 def to_lines(page):
     text = re.sub(r'<br\s*/?>', '\n', page, flags=re.IGNORECASE)
-    text = re.sub(r'<(?:tr|p|div|li)[^>]*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<(?:tr|p|div|li|pre)[^>]*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</?(?:td|th)[^>]*>', '  ', text, flags=re.IGNORECASE)   # table cells -> gap
     text = re.sub(r'<[^>]+>', '', text)
-    # Decode &#9474; etc. into real characters so entity codes can never be
-    # mistaken for numbers (this is what produced "9473 MIG slices").
+    # Decode &#9474; / &nbsp; etc. into real characters so entity codes can never
+    # be mistaken for numbers (this is what produced "9473 MIG slices").
     text = html.unescape(text)
+    # Normalise non-breaking and other unicode spaces to plain spaces.
+    text = re.sub(r'[\u00a0\u2000-\u200b\u202f\u205f\u3000\t]', ' ', text)
     return text.splitlines()
 
 
 def split_row(line):
     """'│  ├─ jupyter-x   1.0   1.0' -> ('jupyter-x', [1.0, 1.0], has_percent)"""
-    body  = line.lstrip(' ' + TREE_CHARS)
+    has_pct = bool(re.search(r'\(\s*\d+(?:\.\d+)?\s*%\s*\)', line))
+    body  = re.sub(r'\(\s*\d+(?:\.\d+)?\s*%\s*\)', ' ', line)     # drop "(83%)"
+    body  = re.sub('[' + TREE_CHARS + ']', ' ', body)
     parts = body.split()
     if not parts:
         return None, [], False
-    name, nums, has_pct = parts[0], [], False
+    name, nums = parts[0], []
     for tok in parts[1:]:
-        if tok.startswith('('):          # "(83%)"
-            has_pct = True
-            continue
         try:
             nums.append(float(tok))
         except ValueError:
@@ -103,11 +105,13 @@ def parse_tree(lines):
     cur_res = cur_node = None
 
     for line in lines:
+        if not line.strip():
+            continue                      # blank lines (e.g. from <br>) carry no info
         has_tree = any(c in line for c in TREE_CHARS)
 
         if not has_tree:
             # Top-level line: a new resource header, or something unrelated.
-            m = re.match(r'^ ?(nvidia\.com/\S+)\s', line)
+            m = re.match(r'^\s*(nvidia\.com/[\w.\-]+)', line)
             if m and m.group(1) not in resources:
                 cur_res = m.group(1)
                 resources[cur_res] = {}
@@ -163,6 +167,15 @@ def is_system(name):
 def parse_status(page, users):
     lines     = to_lines(page)
     resources = parse_tree(lines)
+
+    # Safety net: never publish zeros because the page layout changed.
+    if JUPYTER_NODE not in resources.get('nvidia.com/gpu', {}):
+        # Only print resource header / node lines (no pod names = no usernames).
+        for ln in lines:
+            if 'nvidia.com/gpu' in ln or (JUPYTER_NODE in ln and '%' in ln):
+                print('DEBUG', repr(ln[:160]))
+        raise SystemExit('Could not find the kiaransalee row under nvidia.com/gpu; '
+                         'status.json NOT updated. See DEBUG lines above.')
 
     student_gpu = researcher_gpu = 0
     student_mig = researcher_mig = 0

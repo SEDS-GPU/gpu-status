@@ -3,16 +3,25 @@
 Reads users.csv and scrapes the cluster status page.
 Writes status.json with only counts — no usernames ever leave this script.
 
+Only the "Resource usage (overall)" tree is parsed. Each resource there is a
+top-level line (e.g. " nvidia.com/gpu  (92%) 55.0 ..."), node lines carry a
+percentage ("├─ kiaransalee  (83%) 5.0 ..."), pod lines do not.
+
 Counting rules:
 - nvidia.com/gpu -> kiaransalee: all pods except system ones count.
-  GPU count is read from the request column (first number on the pod line).
+  GPU count is the pod's "Requested" value.
   jupyter-USERNAME: look up CSV, unknown = researcher.
   manually named pods: look up CSV, unknown = researcher.
 - nvidia.com/mig-* -> kiaransalee: jupyter-* pods only.
   look up CSV, unknown = student.
+- Used MIG slices = sum of the kiaransalee node's Requested column over all
+  nvidia.com/mig-* resources (every pod, Jupyter or not).
+  Total = MIG_LIMIT (the page's Allocatable column under-reports it);
+  free = MIG_LIMIT - used.
 """
 
 import csv
+import html
 import json
 import re
 import time
@@ -27,6 +36,7 @@ RESEARCHER_LIMIT = 4
 MIG_LIMIT        = 4
 
 SYSTEM_PREFIXES = ('kube-', 'dnsutils-')
+TREE_CHARS      = '│├└─'
 
 
 def load_users(path='users.csv'):
@@ -35,7 +45,7 @@ def load_users(path='users.csv'):
         reader = csv.DictReader(f)
         reader.fieldnames = [h.strip().lower() for h in reader.fieldnames]
         for row in reader:
-            username = row.get('github account', '').strip().lower()
+            username = (row.get('github account') or '').strip().lower()
             role     = (row.get('category') or '').strip().lower()
             if username and role:
                 users[username] = role
@@ -55,144 +65,145 @@ def fetch_status(retries=3, delay=10):
     raise RuntimeError(f"Failed to fetch status page after {retries} attempts")
 
 
-def get_gpu_count(line):
-    """Extract the GPU request count from a pod line.
-    The count appears after the pod name as a column separated by multiple spaces.
-    We split on 2+ spaces to separate the name from the numeric columns.
-    """
-    clean = re.sub(r'&#\d+;', ' ', line).strip()
-    # Split on 2+ spaces to separate pod name from numeric columns
-    parts = re.split(r'\s{2,}', clean)
-    # parts[0] is pod name, parts[1] onwards are numeric columns
-    for part in parts[1:]:
-        part = part.strip()
-        try:
-            v = float(part)
-            if v >= 1:
-                return int(v)
-        except ValueError:
-            pass
-    return 1  # default to 1 if not found
-
-
-def get_kiaransalee_pods(lines, start_idx, end_idx):
-    """
-    Given lines between start_idx and end_idx, find the kiaransalee node
-    and return pod counts as (jupyter_pods, manual_pods).
-    Both are dicts of {pod_name: gpu_count}.
-    Pod lines contain &#9474; (│) for middle entries or &#9492; (└) for the last entry.
-    """
-    node_idx = None
-    for i in range(start_idx, end_idx):
-        if JUPYTER_NODE in lines[i]:
-            node_idx = i
-            break
-    if node_idx is None:
-        return {}, {}
-
-    jupyter_pods = {}  # name -> gpu count
-    manual_pods  = {}  # name -> gpu count
-
-    for i in range(node_idx + 1, end_idx):
-        line = lines[i]
-        # Accept both │ (middle child) and └ (last child)
-        if '&#9474;' not in line and '&#9492;' not in line:
-            break
-
-        gpu_count = get_gpu_count(line)
-
-        m = re.search(r'jupyter-([\w-]+)', line)
-        if m:
-            jupyter_pods[m.group(1).lower()] = gpu_count
-            continue
-
-        clean  = re.sub(r'&#\d+;', ' ', line).strip()
-        tokens = clean.split()
-        if not tokens:
-            continue
-        name = tokens[0].lower()
-
-        if any(name.startswith(p) for p in SYSTEM_PREFIXES):
-            continue
-        if re.match(r'^[\d.]+', name):
-            continue
-        if len(name) < 3:
-            continue
-
-        manual_pods[name] = gpu_count
-
-    return jupyter_pods, manual_pods
-
-
-def parse_status(html, users):
-    text = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)
+# ── Page → plain text lines ──────────────────────────────────────────────────
+def to_lines(page):
+    text = re.sub(r'<br\s*/?>', '\n', page, flags=re.IGNORECASE)
     text = re.sub(r'<(?:tr|p|div|li)[^>]*>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'&amp;', '&', text)
+    # Decode &#9474; etc. into real characters so entity codes can never be
+    # mistaken for numbers (this is what produced "9473 MIG slices").
+    text = html.unescape(text)
+    return text.splitlines()
 
-    lines = text.splitlines()
 
-    # Find section boundaries
-    gpu_start = gpu_end = None
-    mig_starts = []
+def split_row(line):
+    """'│  ├─ jupyter-x   1.0   1.0' -> ('jupyter-x', [1.0, 1.0], has_percent)"""
+    body  = line.lstrip(' ' + TREE_CHARS)
+    parts = body.split()
+    if not parts:
+        return None, [], False
+    name, nums, has_pct = parts[0], [], False
+    for tok in parts[1:]:
+        if tok.startswith('('):          # "(83%)"
+            has_pct = True
+            continue
+        try:
+            nums.append(float(tok))
+        except ValueError:
+            pass                         # "1.0Gi", "500.0m" etc. — not needed here
+    return name, nums, has_pct
 
-    for i, line in enumerate(lines):
-        if 'nvidia.com/gpu' in line and 'mig' not in line.lower() and gpu_start is None:
-            gpu_start = i
-        elif gpu_start is not None and gpu_end is None and 'nvidia.com/mig' in line:
-            gpu_end = i
-            mig_starts.append(i)
-        elif 'nvidia.com/mig' in line:
-            mig_starts.append(i)
 
-    # Four counters (in GPU units, not pod counts)
-    student_gpu    = 0
-    researcher_gpu = 0
-    student_mig    = 0
-    researcher_mig = 0
+def parse_tree(lines):
+    """
+    Returns {resource: {node: {'requested', 'alloc', 'free', 'pods': {name: req}}}}
+    for nvidia.com/* resources of the overall usage tree only.
+    """
+    resources = {}
+    cur_res = cur_node = None
 
-    # ── GPU section ───────────────────────────────────────────────────────────
-    if gpu_start is not None and gpu_end is not None:
-        jupyter_pods, manual_pods = get_kiaransalee_pods(lines, gpu_start, gpu_end)
+    for line in lines:
+        has_tree = any(c in line for c in TREE_CHARS)
 
-        for pod, count in jupyter_pods.items():
-            role = users.get(pod)
-            if role == 'student': student_gpu    += count
-            else:                 researcher_gpu += count
+        if not has_tree:
+            # Top-level line: a new resource header, or something unrelated.
+            m = re.match(r'^ ?(nvidia\.com/\S+)\s', line)
+            if m and m.group(1) not in resources:
+                cur_res = m.group(1)
+                resources[cur_res] = {}
+            else:
+                cur_res = None
+            cur_node = None
+            continue
 
-        for pod, count in manual_pods.items():
-            role = users.get(pod)
-            if role == 'student': student_gpu    += count
-            else:                 researcher_gpu += count
+        if cur_res is None:
+            continue
 
-    # ── MIG sections ─────────────────────────────────────────────────────────
-    mig_jupyter_pods = {}
-    for idx, mig_start in enumerate(mig_starts):
-        mig_end = mig_starts[idx + 1] if idx + 1 < len(mig_starts) else len(lines)
-        j_pods, _ = get_kiaransalee_pods(lines, mig_start, mig_end)
-        for pod, count in j_pods.items():
-            mig_jupyter_pods[pod] = mig_jupyter_pods.get(pod, 0) + count
+        name, nums, is_node = split_row(line)
+        if not name:
+            continue
 
-    for pod, count in mig_jupyter_pods.items():
-        role = users.get(pod)
-        if role == 'researcher': researcher_mig += count
-        else:                    student_mig    += count
+        if is_node:
+            # Columns: Requested, Limit, Allocatable, Free
+            cur_node = name.lower()
+            resources[cur_res][cur_node] = dict(
+                requested=nums[0] if len(nums) > 0 else 0.0,
+                alloc=nums[2]     if len(nums) > 2 else 0.0,
+                free=nums[3]      if len(nums) > 3 else 0.0,
+                pods={},
+            )
+        elif cur_node is not None:
+            # Columns: Requested, Limit
+            resources[cur_res][cur_node]['pods'][name.lower()] = nums[0] if nums else 1.0
 
-    # ── MIG free slice counting (mig-3g.40gb and mig-4g.40gb) ────────────────
-    free_mig = 0
-    for i, line in enumerate(lines):
-        if 'nvidia.com/mig-3g' in line or 'nvidia.com/mig-4g' in line:
-            for j in range(i + 1, min(i + 10, len(lines))):
-                if JUPYTER_NODE in lines[j]:
-                    nums = re.findall(r'[\d.]+', lines[j])
-                    if nums:
-                        try:
-                            free_mig += int(float(nums[-1]))
-                        except ValueError:
-                            pass
-                    break
+    return resources
 
-    # ── Timestamp ─────────────────────────────────────────────────────────────
+
+# ── User lookup ───────────────────────────────────────────────────────────────
+def jupyter_user(pod):
+    """jupyter-giordano-2ddemarzo -> giordano-demarzo (KubeSpawner escaping)."""
+    u = pod[len('jupyter-'):]
+    u = re.sub(r'---[0-9a-f]{6,}$', '', u)   # hashed safe-slug suffix
+    u = u.split('--')[0]                      # named-server suffix
+    return u.replace('-2d', '-').replace('-2e', '.').replace('-5f', '_')
+
+
+def role_of(name, users):
+    if name.startswith('jupyter-'):
+        raw = name[len('jupyter-'):]
+        return users.get(jupyter_user(name)) or users.get(raw)
+    return users.get(name)
+
+
+def is_system(name):
+    return any(name.startswith(p) for p in SYSTEM_PREFIXES)
+
+
+# ── Main computation ─────────────────────────────────────────────────────────
+def parse_status(page, users):
+    lines     = to_lines(page)
+    resources = parse_tree(lines)
+
+    student_gpu = researcher_gpu = 0
+    student_mig = researcher_mig = 0
+    used_mig = 0
+
+    # GPU: every non-system pod on the Jupyter node
+    node = resources.get('nvidia.com/gpu', {}).get(JUPYTER_NODE)
+    if node:
+        for pod, req in node['pods'].items():
+            if is_system(pod):
+                continue
+            count = max(1, int(round(req)))
+            if role_of(pod, users) == 'student':
+                student_gpu += count
+            else:
+                researcher_gpu += count
+
+    # MIG: all mig profiles on the Jupyter node
+    for res, nodes in resources.items():
+        if not res.startswith('nvidia.com/mig-'):
+            continue
+        node = nodes.get(JUPYTER_NODE)
+        if not node:
+            continue
+        # Used = slices requested by pods on this node (incl. non-Jupyter pods).
+        # Total/free are NOT taken from the page: its Allocatable column
+        # under-reports kiaransalee's slices, so the total comes from MIG_LIMIT.
+        used_mig += int(round(node['requested']))
+        for pod, req in node['pods'].items():
+            if not pod.startswith('jupyter-'):
+                continue
+            count = max(1, int(round(req)))
+            if role_of(pod, users) == 'researcher':
+                researcher_mig += count
+            else:
+                student_mig += count
+
+    total_mig = MIG_LIMIT
+    free_mig  = max(0, total_mig - used_mig)
+
+    text      = '\n'.join(lines)
     ts_match  = re.search(r'Cluster status\s+([\w,: +]+\d{4})', text)
     timestamp = ts_match.group(1).strip() if ts_match else None
 
@@ -202,6 +213,8 @@ def parse_status(html, users):
         studentMIG=student_mig,
         researcherMIG=researcher_mig,
         freeMIG=free_mig,
+        totalMIG=total_mig,
+        usedMIG=used_mig,               # all pods, incl. non-Jupyter ones
         studentLimit=STUDENT_LIMIT,
         researcherLimit=RESEARCHER_LIMIT,
         migLimit=MIG_LIMIT,
@@ -212,8 +225,8 @@ def parse_status(html, users):
 
 if __name__ == '__main__':
     users  = load_users('users.csv')
-    html   = fetch_status()
-    result = parse_status(html, users)
+    page   = fetch_status()
+    result = parse_status(page, users)
 
     with open('status.json', 'w') as f:
         json.dump(result, f, indent=2)

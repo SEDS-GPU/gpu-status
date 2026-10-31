@@ -1,14 +1,14 @@
 {
   "studentGPU": 0,
   "researcherGPU": 2,
-  "studentMIG": 1,
+  "studentMIG": 0,
   "researcherMIG": 0,
-  "freeMIG": 3,
+  "freeMIG": 4,
   "totalMIG": 4,
-  "usedMIG": 1,
+  "usedMIG": 0,
   "studentLimit": 2,
   "researcherLimit": 4,
   "migLimit": 4,
-  "timestamp": "Sat, 31 Oct 2026 07:32:01 +0000",
-  "updatedAt": "2026-10-31T07:39:19.465962+00:00"
+  "timestamp": "Sat, 31 Oct 2026 13:52:01 +0000",
+  "updatedAt": "2026-10-31T13:58:12.384031+00:00"
 }
